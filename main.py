@@ -5,10 +5,18 @@ Copyright (c) Wei YANG, 2017
 from __future__ import print_function
 
 import argparse
+import math
 import os
 import shutil
 import time
 import random
+
+from torchvision.transforms.transforms import (
+    ColorJitter,
+    RandomAffine,
+    RandomPerspective,
+)
+from utils.focal import FocalLoss
 
 import torch
 import torch.nn as nn
@@ -26,7 +34,16 @@ import models
 from math import cos, pi
 
 from celeba import CelebA, LFW
-from utils import Bar, Logger, AverageMeter, accuracy, mkdir_p, savefig, accuracy_bce
+from utils import (
+    Bar,
+    Logger,
+    AverageMeter,
+    accuracy,
+    mkdir_p,
+    savefig,
+    accuracy_bce,
+    stat,
+)
 from tensorboardX import SummaryWriter
 
 
@@ -71,6 +88,10 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "-fc", "--focal", action="store_true", help="Reverse Sample Count CE Weight",
+)
+
+parser.add_argument(
     "--start-epoch",
     default=0,
     type=int,
@@ -86,10 +107,10 @@ parser.add_argument(
 )
 parser.add_argument(
     "--test-batch",
-    default=256,
+    default=320,
     type=int,
     metavar="N",
-    help="test batchsize (default: 256)",
+    help="test batchsize (default: 320)",
 )
 parser.add_argument(
     "--lr",
@@ -100,8 +121,11 @@ parser.add_argument(
     help="initial learning rate",
 )
 parser.add_argument(
-    "--lr-decay", type=str, default="step", help="mode for learning rate decay"
+    "--lr-decay", type=str, default="cos", help="mode for learning rate decay"
 )
+
+parser.add_argument("--sampler", type=str, default="uniform", help="data sampler")
+
 parser.add_argument(
     "--step", type=int, default=20, help="interval for learning rate decay in step mode"
 )
@@ -166,7 +190,11 @@ parser.add_argument(
     "-el", "--evaluate_lfw", action="store_true", help="evaluate model on lfw set",
 )
 parser.add_argument(
-    "--pretrained", dest="pretrained", action="store_true", help="use pre-trained model"
+    "-pt",
+    "--pretrained",
+    dest="pretrained",
+    action="store_true",
+    help="use pre-trained model",
 )
 parser.add_argument(
     "--world-size", default=1, type=int, help="number of distributed processes"
@@ -245,8 +273,9 @@ def main():
     cudnn.benchmark = True
 
     # Data loading code
-    normalize = transforms.Normalize(
-        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+    normalize = transforms.Normalize( # statistics from CelebA TrainSet 
+        mean=[0.5084, 0.4287, 0.3879], 
+        std=[0.2656, 0.2451, 0.2419]
     )
 
     train_dataset = CelebA(
@@ -255,14 +284,18 @@ def main():
         transforms.Compose(
             [
                 transforms.RandomHorizontalFlip(),
-                transforms.RandomResizedCrop(size=(158, 198), scale=(0.5, 1)),
+                transforms.RandomResizedCrop(size=(158, 198), scale=(0.8, 1.0)),
+                transforms.ColorJitter(.05, .05, .05),
+                tansforms.RandomGrayscale(),
+                # transforms.GaussianBlur(),
                 transforms.ToTensor(),
                 normalize,
             ]
         ),
+        sampler=args.sampler,
     )
 
-    train_sample_prob = train_dataset.__class_sample_prob__()
+    train_sample_prob = train_dataset._class_sample_prob()
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -308,7 +341,9 @@ def main():
     )
 
     lfw_test_loader = torch.utils.data.DataLoader(
-        LFW(args.data_lfw, transforms.Compose([transforms.ToTensor(), normalize,]),),
+        LFW(
+            args.data_lfw, transforms.Compose([transforms.ToTensor(), normalize,]),
+        ),  # celebA mean variance
         batch_size=args.test_batch,
         shuffle=False,
         num_workers=args.workers,
@@ -319,13 +354,15 @@ def main():
     if args.lw:  # loss weight
         print("=> loading CE loss_weight")
         criterion = nn.BCEWithLogitsLoss(
-            reduction="sum", weight=1 / train_sample_prob
+            reduction="mean", weight=1 / torch.sqrt(train_sample_prob)
         ).cuda()
     else:
         # criterion = nn.CrossEntropyLoss().cuda()
-        criterion = nn.BCEWithLogitsLoss(
-            reduction="sum"
-        ).cuda()  # align with sum(loss) in CE setting
+        criterion = nn.BCEWithLogitsLoss(reduction="mean").cuda()
+
+    if args.focal:
+        print("=> using focal loss")
+        criterion = FocalLoss(criterion, balance_param=5)
 
     optimizer = torch.optim.SGD(
         model.parameters(),
@@ -366,8 +403,9 @@ def main():
             ]
         )
 
-    if args.evaluate:
-        validate(test_loader, model, criterion)
+    if args.evaluate: #TODO
+        # validate(test_loader, model, criterion)
+        stat(train_loader)
         return
 
     if args.evaluate_lfw:
@@ -468,10 +506,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
         #  ==== bceloss === #
 
-        loss_sum = criterion(output, target) / input.size(
-            0
-        )  # calcualte sum loss over all attributes.
-        losses.update(loss_sum.item(), input.size(0))
+        loss = criterion(output, target)  # calcualte sum loss over all attributes.
+        losses.update(loss.item(), input.size(0))
         loss_avg = losses.avg
 
         top1.update(accuracy_bce(output, target).item(), input.size(0))
@@ -482,7 +518,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         # compute gradient and do SGD step
         optimizer.zero_grad()
         # loss_sum = sum(loss)
-        loss_sum.backward()
+        loss.backward()
         optimizer.step()
 
         # measure elapsed time
@@ -532,10 +568,8 @@ def validate(val_loader, model, criterion):
 
             #  ==== bceloss === #
 
-            loss_sum = criterion(output, target) / input.size(
-                0
-            )  # calcualte sum loss over all attributes.
-            losses.update(loss_sum.item(), input.size(0))
+            loss = criterion(output, target)  # calcualte sum loss over all attributes.
+            losses.update(loss.item(), input.size(0))
             loss_avg = losses.avg
 
             top1.update(accuracy_bce(output, target).item(), input.size(0))

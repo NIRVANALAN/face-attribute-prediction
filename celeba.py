@@ -1,3 +1,4 @@
+import random
 import torch
 import numpy as np
 import torch.utils.data as data
@@ -41,6 +42,7 @@ class CelebA(data.Dataset):
         transform=None,
         target_transform=None,
         loader=default_loader,
+        sampler="uniform",
     ):
         images = []
         targets = []
@@ -58,11 +60,20 @@ class CelebA(data.Dataset):
         self.images = [os.path.join(root, "img_align_celeba", img) for img in images]
         # self.images = [os.path.join(root, 'img_align_celeba_png', img) for img in images]
         self.targets = np.array(targets)
+        self.cls_num = self.targets.shape[1]
         self.transform = transform
         self.target_transform = target_transform
         self.loader = loader
+        assert sampler in ["inverse", "balance", "uniform"]
+        self.class_dict = self._get_class_dict()
+        self.sampler_type = sampler
 
     def __getitem__(self, index):
+        # sampling
+        if self.sampler_type == "balance":
+            sample_class = np.random.randint(0, self.cls_num - 1)
+            sample_indexes = self.class_dict[sample_class]
+            index = random.choice(sample_indexes)
         path = self.images[index]
         sample = self.loader(path)  # 178*218
         target = self.targets[index]
@@ -77,9 +88,15 @@ class CelebA(data.Dataset):
     def __len__(self):
         return len(self.images)
 
-    def __class_sample_prob__(self):
+    def _class_sample_prob(self):
         sample_prob = np.sum(self.targets, axis=0) / self.targets.shape[0]
         return torch.Tensor(sample_prob).cuda()
+
+    def _get_class_dict(self):
+        class_dict = dict()
+        for i in range(self.cls_num):
+            class_dict[i] = np.where(self.targets[:, i])[0].tolist()
+        return class_dict
 
 
 class LFW(data.Dataset):
