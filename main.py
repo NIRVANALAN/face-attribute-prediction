@@ -269,9 +269,6 @@ def main():
             )
 
         args.sampler = "balance"
-        print(
-            "=> using balance sampler to fine-tune classifier. Extractor param fixed."
-        )
 
     args.distributed = args.world_size > 1
 
@@ -303,6 +300,7 @@ def main():
     normalize = transforms.Normalize(  # statistics from CelebA TrainSet
         mean=[0.5084, 0.4287, 0.3879], std=[0.2656, 0.2451, 0.2419]
     )
+    print("=> using {} sampler to load data.".format(args.sampler))
 
     train_dataset = CelebA(
         args.data,
