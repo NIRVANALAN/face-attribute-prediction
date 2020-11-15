@@ -14,26 +14,16 @@ Face Attribute Prediction on [CelebA](http://mmlab.ie.cuhk.edu.hk/projects/Celeb
 
 ## Features
 
-* Both ResNet and MobileNet as the backbone for scalability
-* Each of the 40 annotated attributes predicted with multi-head networks
-* Achieve ~92% average accuracy, comparative to state-of-the-art
-* Fast convergence (5~10 epochs) through finetuning the ImageNet pre-trained models
+* BCE loss for attributes recognition
+* Good capacity as well as generalization ability.Achieve 92%+ average accuracy on CelebA Val as well as >73% on LFWA+.
+* ResNet-50 as backbone
+* Focal Loss
+* Class balanced sampler 
+* fast convergence: 91% acc on CelebA Val after 1 epoch.
 
 ## Result
 
-| Method           | CelebA Acc | LFWA ACC |
-| ---------------- | ---------- | -------- |
-| Baseline         | 91.3       | 72.2     |
-| Cosine decay     | 91.3       | 72.36    |
-| Balance Sampling |
-| Sqrt PosWeight   | 91.2       | 72.2     |
-| Focal            |
-
-
-1. input - mean
-2. celebA liangdianduiqi lfw EYE   
-3. test 70 112 108 112
-<!-- 4. Homorgraphy ?  -->
-5. decoupling. balanced 2-stage.
-<!-- 6. translate DA      -->
-7. weights on attributes. 
+| Method                 | CelebA Acc | LFWA ACC |
+| ---------------------- | ---------- | -------- |
+| BCE Baseline           | 91.3       | 72.2     |
+| Cos Decay + US + focal | 92.14      | 73.43    |

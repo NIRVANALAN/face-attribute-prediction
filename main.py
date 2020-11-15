@@ -14,6 +14,7 @@ import random
 from torchvision.transforms.transforms import (
     ColorJitter,
     RandomAffine,
+    RandomGrayscale,
     RandomPerspective,
 )
 from utils.focal import FocalLoss
@@ -32,6 +33,7 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import models
 from math import cos, pi
+from models.resnet import fc_block
 
 from celeba import CelebA, LFW
 from utils import (
@@ -163,6 +165,11 @@ parser.add_argument(
     metavar="PATH",
     help="path to save checkpoint (default: checkpoints)",
 )
+
+parser.add_argument(
+    "--ft", action="store_true", help="fine tune on Balance Class Sampler",
+)
+
 parser.add_argument(
     "--resume",
     default="",
@@ -184,7 +191,10 @@ parser.add_argument("--groups", type=int, default=3, help="ShuffleNet model grou
 # Miscs
 parser.add_argument("--manual-seed", type=int, help="manual seed")
 parser.add_argument(
-    "-e", "--evaluate", action="store_true", help="evaluate model on validation set",
+    "-e", "--evaluate", action="store_true", help="evaluate model on test set",
+)
+parser.add_argument(
+    "-v", "--validate", action="store_true", help="evaluate model on validation set",
 )
 parser.add_argument(
     "-el", "--evaluate_lfw", action="store_true", help="evaluate model on lfw set",
@@ -221,18 +231,9 @@ def main():
     global args, best_prec1
     args = parser.parse_args()
 
-    args.distributed = args.world_size > 1
-
-    if args.distributed:
-        dist.init_process_group(
-            backend=args.dist_backend,
-            init_method=args.dist_url,
-            world_size=args.world_size,
-        )
     # Use CUDA
     # os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_id
     use_cuda = torch.cuda.is_available()
-
     # Random seed
     if args.manual_seed is None:
         args.manual_seed = random.randint(1, 10000)
@@ -255,6 +256,32 @@ def main():
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch](pretrained=False)
 
+    if args.ft:
+        for param in model.parameters():
+            param.requires_grad = False
+        classifier_numbers = model.num_attributes
+        # newly constructed classifiers have requires_grad=True
+        for i in range(classifier_numbers):
+            setattr(
+                model,
+                "classifier" + str(i).zfill(2),
+                nn.Sequential(fc_block(512, 256), nn.Linear(256, 1)),
+            )
+
+        args.sampler = "balance"
+        print(
+            "=> using balance sampler to fine-tune classifier. Extractor param fixed."
+        )
+
+    args.distributed = args.world_size > 1
+
+    if args.distributed:
+        dist.init_process_group(
+            backend=args.dist_backend,
+            init_method=args.dist_url,
+            world_size=args.world_size,
+        )
+
     if not args.distributed:
         if args.arch.startswith("alexnet") or args.arch.startswith("vgg"):
             model.features = torch.nn.DataParallel(model.features)
@@ -273,9 +300,8 @@ def main():
     cudnn.benchmark = True
 
     # Data loading code
-    normalize = transforms.Normalize( # statistics from CelebA TrainSet 
-        mean=[0.5084, 0.4287, 0.3879], 
-        std=[0.2656, 0.2451, 0.2419]
+    normalize = transforms.Normalize(  # statistics from CelebA TrainSet
+        mean=[0.5084, 0.4287, 0.3879], std=[0.2656, 0.2451, 0.2419]
     )
 
     train_dataset = CelebA(
@@ -284,12 +310,10 @@ def main():
         transforms.Compose(
             [
                 transforms.RandomHorizontalFlip(),
-                transforms.RandomResizedCrop(size=(158, 198), scale=(0.8, 1.0)),
-                transforms.ColorJitter(.05, .05, .05),
-                tansforms.RandomGrayscale(),
-                # transforms.GaussianBlur(),
+                transforms.RandomResizedCrop(size=(256, 256), scale=(0.5, 1.0)),
                 transforms.ToTensor(),
                 normalize,
+                transforms.RandomErasing(),
             ]
         ),
         sampler=args.sampler,
@@ -320,7 +344,9 @@ def main():
         CelebA(
             args.data,
             "val_attr_list.txt",
-            transforms.Compose([transforms.ToTensor(), normalize,]),
+            transforms.Compose(
+                [transforms.Resize(size=(256, 256)), transforms.ToTensor(), normalize,]
+            ),
         ),
         batch_size=args.test_batch,
         shuffle=False,
@@ -332,7 +358,9 @@ def main():
         CelebA(
             args.data,
             "test_attr_list.txt",
-            transforms.Compose([transforms.ToTensor(), normalize,]),
+            transforms.Compose(
+                [transforms.Resize(size=(256, 256)), transforms.ToTensor(), normalize,]
+            ),
         ),
         batch_size=args.test_batch,
         shuffle=False,
@@ -364,6 +392,7 @@ def main():
         print("=> using focal loss")
         criterion = FocalLoss(criterion, balance_param=5)
 
+    print("=> using wd {}".format(args.weight_decay))
     optimizer = torch.optim.SGD(
         model.parameters(),
         args.lr,
@@ -403,12 +432,17 @@ def main():
             ]
         )
 
-    if args.evaluate: #TODO
-        # validate(test_loader, model, criterion)
-        stat(train_loader)
+    if args.evaluate:  # TODO
+        validate(test_loader, model, criterion)
+        # stat(train_loader)
+        return
+    if args.validate:  # TODO
+        validate(val_loader, model, criterion)
+        # stat(train_loader)
         return
 
     if args.evaluate_lfw:
+        validate(val_loader, model, criterion)
         validate(lfw_test_loader, model, criterion)
         return
 
