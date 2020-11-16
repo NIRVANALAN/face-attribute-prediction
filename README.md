@@ -28,7 +28,7 @@ Face Attribute Prediction on [CelebA](http://mmlab.ie.cuhk.edu.hk/projects/Celeb
 | ---------------------- | ---------- | --------- |
 | BCE Baseline           | 91.3       | 72.2      |
 | Cos Decay + US + focal | **92.14**  | 73.31     |
-| Cos Decay + BS + focal | 91.7       | **73.54** |
+| Cos Decay + BS + focal | 91.7       | **73.9** |
 
 - [link](https://entuedu-my.sharepoint.com/:u:/g/personal/yushi001_e_ntu_edu_sg/ERg_x3-YK4dItZ4-IH3SEXQBjPKgVdrE22EoI6RvBpUgnw?e=FvC0nk) to pretrained model(ResNet50) 
 - see [train.sh](train.sh) script for more details.
